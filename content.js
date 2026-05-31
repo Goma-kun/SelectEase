@@ -1,6 +1,4 @@
 // SelectEase content.js — 選択範囲を自動コピー
-console.log('[SelectEase] 読み込み完了');
-
 let autoCopyEnabled = true;
 
 chrome.storage.local.get(['autoCopy'], (r) => {
@@ -10,9 +8,35 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes.autoCopy) autoCopyEnabled = changes.autoCopy.newValue;
 });
 
-// ---- クリップボードコピー（フォーカスを奪わない） ----
+// ---- クリップボードコピー（選択範囲を保存・復元しながらexecCommand） ----
 function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).catch(() => {});
+  const sel = window.getSelection();
+  const savedRanges = [];
+  for (let i = 0; i < sel.rangeCount; i++) {
+    savedRanges.push(sel.getRangeAt(i).cloneRange());
+  }
+
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  Object.assign(ta.style, {
+    position: 'fixed', top: '0', left: '0',
+    width: '2px', height: '2px', opacity: '0',
+    border: 'none', outline: 'none', boxShadow: 'none',
+    background: 'transparent'
+  });
+  (document.body || document.documentElement).appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  ta.remove();
+
+  // 選択範囲を復元
+  sel.removeAllRanges();
+  savedRanges.forEach(r => sel.addRange(r));
+
+  // execCommandが失敗した場合はclipboard APIにフォールバック
+  if (!ok) navigator.clipboard.writeText(text).catch(() => {});
 }
 
 // ---- トースト ----
@@ -39,16 +63,44 @@ function isEditable(el) {
   return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || !!el.isContentEditable;
 }
 
-// ---- 自動コピー ----
-document.addEventListener('mouseup', (e) => {
+// ---- 選択確定時にコピーを実行 ----
+let lastCopiedText = '';
+
+function handleSelection() {
   if (!autoCopyEnabled) return;
-  if (isEditable(e.target)) return;
 
   const sel = window.getSelection();
-  const text = sel ? sel.toString() : '';
-  if (!text) return;
+  if (!sel || sel.rangeCount === 0) return;
 
+  const text = sel.toString();
+  // 空選択になったら状態をリセット（次に同じ文字列を選んでもコピーできる）
+  if (!text) { lastCopiedText = ''; return; }
+  if (text === lastCopiedText) return;
+
+  const anchor = sel.anchorNode;
+  const el = anchor && anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
+  if (isEditable(el)) return;
+
+  lastCopiedText = text;
   const rect = sel.getRangeAt(0).getBoundingClientRect();
   copyToClipboard(text);
   showToast('コピー済み', rect);
+}
+
+// マウス選択：ドラッグ中は無視し、離した瞬間だけ確定処理
+document.addEventListener('mouseup', () => {
+  // mouseup直後にブラウザが選択を確定するので軽く遅延
+  setTimeout(handleSelection, 0);
+}, true);
+
+// キーボード選択（Shift+矢印など）：マウスを使っていないときだけ反応
+let mouseDown = false;
+document.addEventListener('mousedown', () => { mouseDown = true; }, true);
+document.addEventListener('mouseup',   () => { mouseDown = false; }, true);
+
+let keyboardSelTimer = null;
+document.addEventListener('selectionchange', () => {
+  if (mouseDown) return; // ドラッグ中の中間状態は無視
+  clearTimeout(keyboardSelTimer);
+  keyboardSelTimer = setTimeout(handleSelection, 300);
 });
