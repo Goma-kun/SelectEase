@@ -24,6 +24,9 @@ function copyToClipboard(text) {
     border: 'none', outline: 'none', boxShadow: 'none',
     background: 'transparent'
   });
+  // コピー前のフォーカス要素を退避（コピー後に戻すため）
+  const prevFocus = document.activeElement;
+
   (document.body || document.documentElement).appendChild(ta);
   ta.focus();
   ta.select();
@@ -34,6 +37,11 @@ function copyToClipboard(text) {
   // 選択範囲を復元
   sel.removeAllRanges();
   savedRanges.forEach(r => sel.addRange(r));
+
+  // 元のフォーカスを戻す
+  if (prevFocus && typeof prevFocus.focus === 'function') {
+    try { prevFocus.focus(); } catch (e) {}
+  }
 
   // execCommandが失敗した場合はclipboard APIにフォールバック
   if (!ok) navigator.clipboard.writeText(text).catch(() => {});
@@ -60,7 +68,12 @@ function showToast(msg, rect) {
 // ---- 編集可能要素は除外 ----
 function isEditable(el) {
   if (!el) return false;
-  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || !!el.isContentEditable;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (el.isContentEditable) return true;
+  // 祖先にcontenteditableがあるかも確認
+  if (el.closest && el.closest('[contenteditable=""],[contenteditable="true"]')) return true;
+  return false;
 }
 
 // ---- 選択確定時にコピーを実行 ----
@@ -68,6 +81,10 @@ let lastCopiedText = '';
 
 function handleSelection() {
   if (!autoCopyEnabled) return;
+
+  // 入力欄など編集可能要素にフォーカスがある場合は一切介入しない
+  // （検索欄の文字を選んで上書きしたいケースを邪魔しないため）
+  if (isEditable(document.activeElement)) return;
 
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return;
@@ -87,20 +104,20 @@ function handleSelection() {
   showToast('コピー済み', rect);
 }
 
-// マウス選択：ドラッグ中は無視し、離した瞬間だけ確定処理
-document.addEventListener('mouseup', () => {
+// 「なぞった時だけ」コピーする：
+// マウスを押した位置と離した位置の距離で、ドラッグ選択かどうかを判定する。
+// ダブルクリックや単純クリックは距離がほぼ0なのでコピーしない。
+const DRAG_THRESHOLD = 6; // px。これ以上動いたらドラッグとみなす
+let downX = 0, downY = 0;
+
+document.addEventListener('mousedown', (e) => {
+  downX = e.clientX;
+  downY = e.clientY;
+}, true);
+
+document.addEventListener('mouseup', (e) => {
+  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (moved < DRAG_THRESHOLD) return; // なぞっていない（クリック/ダブルクリック）→ 何もしない
   // mouseup直後にブラウザが選択を確定するので軽く遅延
   setTimeout(handleSelection, 0);
 }, true);
-
-// キーボード選択（Shift+矢印など）：マウスを使っていないときだけ反応
-let mouseDown = false;
-document.addEventListener('mousedown', () => { mouseDown = true; }, true);
-document.addEventListener('mouseup',   () => { mouseDown = false; }, true);
-
-let keyboardSelTimer = null;
-document.addEventListener('selectionchange', () => {
-  if (mouseDown) return; // ドラッグ中の中間状態は無視
-  clearTimeout(keyboardSelTimer);
-  keyboardSelTimer = setTimeout(handleSelection, 300);
-});
